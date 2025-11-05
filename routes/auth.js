@@ -11,4 +11,6 @@ router.post('/submit', authMiddleware, authController.submitAssessment);
 router.get('/profile', authMiddleware, authController.getUserAssessment);
 router.get('/dashboard', authMiddleware,authController.getDashboardData);
 router.post('/streak', authMiddleware,authController.updateStreak);
+router.post('/logout', authMiddleware, authController.logout);
+
 module.exports = router;
