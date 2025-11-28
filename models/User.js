@@ -205,6 +205,20 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    otpCode: {
+      type: String,
+      default: null,
+    },
+
+    otpExpires: {
+      type: Date,
+      default: null,
+    },
+
+    isOTPVerified: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: true, // Adds createdAt and updatedAt automatically

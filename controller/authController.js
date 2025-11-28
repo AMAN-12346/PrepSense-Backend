@@ -1,5 +1,5 @@
 const User = require('../models/User');
-// 
+//
 const UserAssessment = require('../models/UserAssessment');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -25,8 +25,151 @@ const {
   getCurrentAffairsData,
   getMotivationalQuote,
 } = require('../utills/helper');
+const { generateOTP, getOTPExpiry } = require('../utills/otpService');
+const { sendOTPEmail, sendWelcomeEmail } = require('../utills/emailService');
+exports.sendOTP = async (req, res) => {
+  try {
+    const { emailOrPhone } = req.body;
+
+    if (!emailOrPhone) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email or phone is required',
+      });
+    }
+
+    let email = null,
+      phone = null;
+
+    if (emailRegex.test(emailOrPhone)) {
+      email = emailOrPhone.toLowerCase();
+    } else if (phoneRegex.test(emailOrPhone)) {
+      phone = emailOrPhone;
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid email or phone format',
+      });
+    }
+
+    // Check if user already exists AND is verified
+    const existingUser = await User.findOne(email ? { email } : { phone });
+
+    // ✅ ADD THIS CHECK
+    if (existingUser && existingUser.isEmailVerified) {
+      return res.status(409).json({
+        success: false,
+        message:
+          'User with this email/phone already exists. Please login instead.',
+      });
+    }
+
+    // Generate OTP
+    const otp = generateOTP();
+    const otpExpiry = getOTPExpiry();
+
+    let user = existingUser;
+    if (!user) {
+      user = new User({
+        email,
+        phone,
+        otpCode: otp,
+        otpExpires: otpExpiry,
+      });
+      await user.save();
+    } else {
+      user.otpCode = otp;
+      user.otpExpires = otpExpiry;
+      await user.save();
+    }
+
+    if (email) {
+      await sendOTPEmail(email, otp);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'OTP sent successfully',
+      data: {
+        emailOrPhone: email || phone,
+      },
+    });
+  } catch (error) {
+    console.error('Send OTP error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to send OTP',
+    });
+  }
+};
+
+exports.verifyOTP = async (req, res) => {
+  try {
+    const { emailOrPhone, otp } = req.body;
+
+    if (!emailOrPhone || !otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email/phone and OTP are required',
+      });
+    }
+
+    // Find user
+    let user;
+    if (emailRegex.test(emailOrPhone)) {
+      user = await User.findOne({ email: emailOrPhone.toLowerCase() });
+    } else {
+      user = await User.findOne({ phone: emailOrPhone });
+    }
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    // Check OTP expiry
+    if (!user.otpExpires || new Date() > user.otpExpires) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP has expired',
+      });
+    }
+
+    // Verify OTP
+    if (user.otpCode !== otp.toString()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid OTP',
+      });
+    }
+
+    // Mark OTP as verified
+    user.isOTPVerified = true;
+
+    return res.status(200).json({
+      success: true,
+      message: 'OTP verified successfully',
+      data: {
+        email: user.email,
+        phone: user.phone,
+      },
+    });
+  } catch (error) {
+    console.error('Verify OTP error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to verify OTP',
+      error: error.message,
+    });
+  }
+};
 exports.register = async (req, res) => {
-  console.log('adhadja');
+  console.log(
+    '🚀 ~ file: authController.js:108 ~ exports.register=async ~ req.body:',
+    req.body
+  );
   try {
     const { fullName, emailOrPhone, password } = req.body;
     let errors = {};
@@ -39,6 +182,10 @@ exports.register = async (req, res) => {
     ) {
       errors.fullName = 'Name must be at least 2 characters.';
     }
+    console.log(
+      '🚀 ~ file: authController.js:117 ~ exports.register=async ~ errors:',
+      errors
+    );
     // Email or phone validation
     let email = null,
       phone = null;
@@ -51,11 +198,15 @@ exports.register = async (req, res) => {
     } else {
       errors.emailOrPhone = 'Enter a valid email or 10+ digit phone number.';
     }
+    console.log('🚀 ', errors);
+
+    // Password validation
     const hasMinLen = password && password.length >= 6;
     const hasUC = /[A-Z]/.test(password || '');
     const hasLC = /[a-z]/.test(password || '');
     const hasNum = /[0-9]/.test(password || '');
     const hasSpecial = /[!@#$%^&*(),.?":{}|<>]/.test(password || '');
+    console.log('🚀 ', errors);
 
     if (!password) {
       errors.password = 'Password is required.';
@@ -65,52 +216,79 @@ exports.register = async (req, res) => {
       errors.password =
         'Password must have upper, lower, number & special character.';
     }
+    console.log('🚀 ', errors);
 
-    // Already exists check (prioritize email)
-    if (Object.keys(errors).length === 0) {
-      const existingUser = await User.findOne(email ? { email } : { phone });
-      if (existingUser) {
-        errors.emailOrPhone = 'User with given email/phone already exists.';
-      }
-    }
+    // OTP validation
 
     if (Object.keys(errors).length > 0) {
       return res.status(400).json({ success: false, errors });
     }
+    console.log('🚀 ', errors);
 
-    // Create User
+    // Find user and verify
+    const user = await User.findOne(email ? { email } : { phone });
+    console.log('🚀 ', errors);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found. Please send OTP first.',
+      });
+    }
+    console.log('>>>>>>>>>>>>> ');
+
+    console.log('>>>>>>>>>>>>> ');
+
+    // Check if already registered
+    if (user.isEmailVerified) {
+      return res.status(400).json({
+        success: false,
+        message: 'User already registered',
+      });
+    }
+    console.log('>>>>>>>>>>>>> ');
+
+    // Update user with registration details
     const [firstName, ...lastNameArr] = fullName.trim().split(' ');
     const lastName = lastNameArr.join(' ');
-    const userDoc = new User({
-      email,
-      phone,
-      password,
-      profile: { firstName, lastName },
-    });
-    await userDoc.save();
 
+    user.password = password;
+    user.profile.firstName = firstName;
+    user.profile.lastName = lastName;
+    user.isEmailVerified = true;
+    user.isOTPVerified = false; // Clear for next use
+    user.otpExpires = null;
+
+    await user.save();
+    console.log('>>>>>>>>>>1122222 ');
+
+    // Send welcome email
+    await sendWelcomeEmail(email, fullName);
+    console.log('>>>>>>>>>> ');
+
+    // Generate JWT token
     const payload = {
-      userId: userDoc._id,
-      email: userDoc.email,
+      userId: user._id,
+      email: user.email,
     };
+    console.log('🚀 ', errors);
 
     const token = jwt.sign(payload, process.env.JWT_SECRET, {
       expiresIn: '7d',
     });
+    console.log('🚀 ', errors);
 
-    // Success response
     return res.status(201).json({
       success: true,
       message: 'Account created successfully.',
       data: {
         accessToken: token,
-        userId: userDoc._id,
-        email: userDoc.email,
-        phone: userDoc.phone,
+        user: user.getDashboardData(),
       },
     });
+    console.log('🚀 ', errors);
   } catch (error) {
-    console.log('error', error);
+    console.error('Register error:', error);
     return res.status(500).json({
       success: false,
       message: 'Registration failed',
@@ -140,6 +318,7 @@ exports.login = async (req, res) => {
 
     // ✅ IMPORTANT: Populate selectedExams in the query
     const user = await User.findOne(query).populate('selectedExams');
+    
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -147,9 +326,25 @@ exports.login = async (req, res) => {
       });
     }
 
+    // ✅ ADD THIS CHECK - Ensure user has completed registration
+    if (!user.password || !user.isEmailVerified) {
+      return res.status(401).json({
+        success: false,
+        message: 'Please complete your registration first',
+      });
+    }
+
     // Validate password
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
+    try {
+      const isMatch = await user.comparePassword(password);
+      if (!isMatch) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid credentials',
+        });
+      }
+    } catch (bcryptError) {
+      console.error('Bcrypt error:', bcryptError);
       return res.status(401).json({
         success: false,
         message: 'Invalid credentials',
@@ -175,6 +370,7 @@ exports.login = async (req, res) => {
         user: {
           userId: user._id,
           email: user.email,
+          phone: user.phone,
           fullName: `${user.profile?.firstName || ''} ${
             user.profile?.lastName || ''
           }`.trim(),
@@ -182,9 +378,14 @@ exports.login = async (req, res) => {
             firstName: user.profile?.firstName,
             lastName: user.profile?.lastName,
             profilePicture: user.profile?.profilePicture,
+            dateOfBirth: user.profile?.dateOfBirth,
+            education: user.profile?.education,
           },
-          selectedExams: user.selectedExams || [], // ✅ Include selected exams
-          aiAssessment: user.aiAssessment, // ✅ Include AI assessment data
+          selectedExams: user.selectedExams || [],
+          aiAssessment: user.aiAssessment || {},
+          streak: user.streak,
+          points: user.points,
+          level: user.level,
         },
       },
     });
@@ -193,10 +394,10 @@ exports.login = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Server error during login',
-      error: error.message,
     });
   }
 };
+
 exports.selectExams = async (req, res) => {
   try {
     const { selectedExams } = req.body;
